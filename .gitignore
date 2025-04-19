@@ -1,0 +1,8 @@
+build/
+devel/
+install/
+*.pyc
+__pycache__/
+*.log
+*.wav
+*.mp3
