@@ -8,9 +8,11 @@
     <!-- Route Maker 노드 실행 -->
     <node pkg="route_maker" type="route_maker.py" name="route_maker_node" output="screen" />
 
-    <!-- STT 노드는 일단 주석 처리 -->
-    <!--
+    <!-- STT 노드 실행행 -->
+    <node pkg="wake_word" type="wake_word_node.py" name="wake_word_node" output="screen" />
+
+    <!-- STT 노드 실행 -->
     <node pkg="stt" type="STT_Trigger.py" name="stt_trigger" output="screen" />
-    -->
+
 </launch>
 

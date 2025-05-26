@@ -6,8 +6,8 @@ import os
 import time
 import threading
 
-# AirPods sink 이름 (pactl list short sinks 명령어로 확인 후 정확히 입력)
-AIRPODS_SINK = "bluez_sink.7C_C1_80_05_43_18.a2dp_sink"
+AIRPODS_SINK = "bluez_sink.28_11_A5_BC_BE_F9.a2dp_sink"
+
 mp3_path = "/tmp/instruction.mp3"
 wav_path = "/tmp/instruction.wav"
 

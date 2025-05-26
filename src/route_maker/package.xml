@@ -64,10 +64,13 @@
   <exec_depend>rospy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <depend>marti_nav_msgs</depend>
+
 
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>
+  <build_type>catkin</build_type>
     <!-- Other tools can request additional information be placed here -->
 
   </export>

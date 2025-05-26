@@ -1,0 +1,28 @@
+# ~/.mapviz_config.yaml 또는 ~/.mapviz 설정을 수동 저장 시 사용
+
+mapviz_config:
+  fixed_frame: map
+  plugins:
+    - type: "path"
+      name: "Route"
+      topic: "/gps/route"
+      color: [0, 255, 0, 255]
+      size: 4.0
+
+    - type: "point_cloud2"
+      name: "GPS (NavSatFix)"
+      topic: "/gps/fix"
+      size: 8.0
+      color: [0, 0, 255, 255]
+
+    - type: "point"
+      name: "UTM"
+      topic: "/gps/utm"
+      size: 6.0
+      color: [255, 0, 0, 255]
+
+    - type: "odometry"
+      name: "Odometry"
+      topic: "/odom"
+      color: [255, 255, 0, 255]
+      size: 2.0
