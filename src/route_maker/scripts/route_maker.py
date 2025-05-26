@@ -20,7 +20,6 @@ transformer = Transformer.from_crs("epsg:4326", "epsg:32652", always_xy=True)
 latest_lat, latest_lon = None, None
 current_route_index = 0
 off_route_count = 0
-last_instruction_point = -1
 current_destination = None
 rerouting_in_progress = False
 reroute_threshold = 15.0  # 동적으로 조정될 예정
@@ -30,6 +29,10 @@ MAX_OFF_ROUTE_COUNT = 3  # 5에서 3으로 줄임 (고품질 GPS로 더 빠른 �
 current_gps_accuracy = 2.5  # 기본값 (NEO-M8N 기준)
 current_speed = 0.0
 gps_quality_good = True
+
+# 새로운 안내 시스템을 위한 변수들
+pending_instructions = []  # 대기 중인 안내 큐
+announced_instructions = set()  # 이미 안내된 instruction들의 ID 집합
 
 class GPS2UTM:
     def __init__(self):
@@ -91,6 +94,8 @@ class GPS2UTM:
         # GPS 품질이 좋을 때만 경로 진행 상황 확인
         if has_route and len(route_coords) > 0 and gps_quality_good:
             self.check_route_progress()
+            # 새로운 안내 시스템 호출
+            check_turn_instructions()
 
         rospy.loginfo_throttle(1.0, f"현재 UTM 위치: ({self.utm_x:.2f}, {self.utm_y:.2f})")
 
@@ -138,7 +143,6 @@ class GPS2UTM:
         # 경로 인덱스 업데이트
         if best_idx > current_route_index:
             current_route_index = best_idx
-            check_navigation_instructions(current_route_index)
 
     def trigger_reroute(self):
         """현재 위치에서 목적지까지 경로를 재탐색합니다."""
@@ -155,7 +159,7 @@ class GPS2UTM:
 
 def recalculate_route(destination):
     """현재 위치에서 목적지까지 경로를 다시 계산합니다."""
-    global rerouting_in_progress, current_route_index, last_instruction_point
+    global rerouting_in_progress, current_route_index, pending_instructions, announced_instructions
     
     try:
         rospy.loginfo(f"[경로 재탐색] 목적지: '{destination}'")
@@ -190,7 +194,9 @@ def recalculate_route(destination):
         plan_navigation_route(latest_lat, latest_lon, end_lat, end_lon, destination)
         
         current_route_index = 0
-        last_instruction_point = -1
+        # 재탐색 시 안내 시스템 초기화
+        pending_instructions.clear()
+        announced_instructions.clear()
         
         instruction_pub.publish("경로 재탐색이 완료되었습니다.")
         rospy.loginfo("[경로 재탐색 완료]")
@@ -372,8 +378,6 @@ def publish_path():
 
 instruction_pub = None
 distance_pub = None  # 다음 waypoint 거리 퍼블리셔
-route_instructions = []
-instruction_points = []
 
 def initialize_instruction_publisher():
     global instruction_pub
@@ -382,61 +386,21 @@ def initialize_instruction_publisher():
     global distance_pub
     distance_pub = rospy.Publisher("/gps/next_waypoint_distance", Float32, queue_size=10)
 
-def process_navigation_instructions(instructions):
-    global route_instructions, instruction_points, route_coords
-    
-    route_instructions = []
-    instruction_points = []
-    
-    if not instructions:
-        return
-    
-    for instruction in instructions:
-        instr_type = instruction['type']
-        modifier = instruction.get('modifier', '')
-        
-        if 'location' in instruction:
-            instr_lon, instr_lat = instruction['location']
-            closest_idx = -1
-            min_dist = float('inf')
-            
-            for i, (lon, lat) in enumerate(route_coords):
-                dist = math.hypot(lon - instr_lon, lat - instr_lat)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_idx = i
-            
-            if closest_idx >= 0:
-                if instr_type == 'depart' and modifier == 'straight':
-                    instruction_text = f"도로까지 {instruction['distance']:.0f}미터를 직진하세요"
-                else:
-                    instruction_text = generate_instruction_text(instr_type, modifier)
-                
-                route_instructions.append({
-                    'index': closest_idx,
-                    'text': instruction_text,
-                    'announced_preview': False,
-                    'announced_action': False,
-                    'type': instr_type
-                })
-                instruction_points.append(closest_idx)
-    
-    rospy.loginfo(f"[안내 지시사항] {len(route_instructions)}개 생성 완료")
-
 def generate_instruction_text(instr_type, modifier):
+    """터닝 지시사항 텍스트 생성"""
     if instr_type == "turn":
         if modifier == "left":
-            return "좌회전하세요"
+            return "좌회전입니다"
         elif modifier == "right":
-            return "우회전하세요"
+            return "우회전입니다"
         elif modifier == "slight left":
-            return "약간 좌회전하세요"
+            return "약간 좌회전입니다"
         elif modifier == "slight right":
-            return "약간 우회전하세요"
+            return "약간 우회전입니다"
         elif modifier == "sharp left":
-            return "급좌회전하세요"
+            return "급좌회전입니다"
         elif modifier == "sharp right":
-            return "급우회전하세요"
+            return "급우회전입니다"
     elif instr_type == "roundabout":
         return "로터리에서 진행하세요"
     elif instr_type == "merge":
@@ -451,88 +415,98 @@ def generate_instruction_text(instr_type, modifier):
     
     return "직진하세요"
 
-def check_navigation_instructions(current_index):
-    """속도 기반 적응형 안내 시스템 (거리 정보 포함)"""
-    global instruction_pub, distance_pub, route_instructions, last_instruction_point, latest_lat, latest_lon, route_coords
+def setup_turn_instructions(instructions):
+    """새로운 턴 안내 시스템 설정"""
+    global pending_instructions, announced_instructions, route_coords
     
-    if not instruction_pub or not route_instructions or current_index >= len(route_coords):
+    # 초기화
+    pending_instructions.clear()
+    announced_instructions.clear()
+    
+    if not instructions or not route_coords:
+        return
+    
+    for instruction in instructions:
+        if instruction['type'] in ['turn', 'roundabout', 'merge', 'fork']:
+            instr_lon, instr_lat = instruction['location']
+            
+            # 경로에서 가장 가까운 지점 찾기
+            closest_idx = -1
+            min_dist = float('inf')
+            
+            for i, (lon, lat) in enumerate(route_coords):
+                dist = math.hypot(lon - instr_lon, lat - instr_lat)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_idx = i
+            
+            if closest_idx >= 0:
+                instruction_text = generate_instruction_text(instruction['type'], instruction.get('modifier', ''))
+                
+                # 고유 ID 생성 (좌표 기반)
+                instruction_id = f"{closest_idx}_{instruction['type']}_{instruction.get('modifier', '')}"
+                
+                pending_instructions.append({
+                    'id': instruction_id,
+                    'index': closest_idx,
+                    'text': instruction_text,
+                    'location': (instr_lat, instr_lon)
+                })
+    
+    # 인덱스 순으로 정렬
+    pending_instructions.sort(key=lambda x: x['index'])
+    
+    rospy.loginfo(f"[턴 안내 시스템] {len(pending_instructions)}개 턴 지점 설정 완료")
+    for instr in pending_instructions:
+        rospy.loginfo(f"  - 인덱스 {instr['index']}: {instr['text']}")
+
+def check_turn_instructions():
+    """현재 위치에서 턴 안내 확인 - 간단하고 확실한 방식"""
+    global pending_instructions, announced_instructions, instruction_pub, current_route_index
+    global latest_lat, latest_lon
+    
+    if not pending_instructions or not instruction_pub or not latest_lat or not latest_lon:
         return
     
     current_utm_x, current_utm_y = latlon_to_utm(latest_lat, latest_lon)
     
-    # 속도 기반 안내 거리 계산
-    walking_speed = max(current_speed, 1.0)  # 최소 1m/s로 가정
-    preview_distance = max(15.0, walking_speed * 4)  # 최소 15m, 4초 전 미리 안내
-    action_distance = max(5.0, walking_speed * 1.5)   # 최소 5m, 1.5초 전 실행 안내
+    # 대기 중인 안내들을 순회하면서 확인
+    instructions_to_remove = []
     
-    # GPS 정확도에 따른 안내 거리 조정
-    accuracy_factor = max(1.0, current_gps_accuracy / 5.0)
-    preview_distance *= accuracy_factor
-    action_distance *= accuracy_factor
-    
-    # 가장 가까운 다음 waypoint 찾기 및 거리 퍼블리시
-    next_waypoint_distance = float('inf')
-    for i, instruction in enumerate(route_instructions):
+    for i, instruction in enumerate(pending_instructions):
+        instruction_id = instruction['id']
         instruction_idx = instruction['index']
+        instruction_text = instruction['text']
+        instr_lat, instr_lon = instruction['location']
         
-        if instruction['announced_action']:
+        # 이미 안내된 것은 건너뛰기
+        if instruction_id in announced_instructions:
+            instructions_to_remove.append(i)
             continue
+        
+        # 턴 지점까지의 거리 계산
+        instr_utm_x, instr_utm_y = latlon_to_utm(instr_lat, instr_lon)
+        distance_to_turn = math.hypot(instr_utm_x - current_utm_x, instr_utm_y - current_utm_y)
+        
+        # 10미터 이내에 접근했을 때 안내
+        if distance_to_turn <= 10.0:
+            # 즉시 안내 발송
+            announcement = f"잠시 후 {instruction_text}"
+            instruction_pub.publish(announcement)
             
-        if instruction_idx >= current_index and instruction_idx < len(route_coords):
-            instr_lon, instr_lat = route_coords[instruction_idx]
-            instr_utm_x, instr_utm_y = latlon_to_utm(instr_lat, instr_lon)
-            dist_to_instr = math.hypot(instr_utm_x - current_utm_x, instr_utm_y - current_utm_y)
+            # 안내 완료 표시
+            announced_instructions.add(instruction_id)
+            instructions_to_remove.append(i)
             
-            if dist_to_instr < next_waypoint_distance:
-                next_waypoint_distance = dist_to_instr
+            rospy.loginfo(f"[턴 안내 발송] {announcement} (거리: {distance_to_turn:.1f}m)")
     
-    # 다음 waypoint까지 거리 퍼블리시 (별도 토픽)
-    if next_waypoint_distance != float('inf') and distance_pub:
-        distance_msg = Float32()
-        distance_msg.data = next_waypoint_distance
-        distance_pub.publish(distance_msg)
-    
-    for i, instruction in enumerate(route_instructions):
-        instruction_idx = instruction['index']
-        
-        if instruction['announced_action']:
-            continue
-        
-        if instruction_idx < current_index - 10:  # 너무 뒤에 있는 지시사항 제외
-            continue
-        
-        if instruction_idx < len(route_coords):
-            instr_lon, instr_lat = route_coords[instruction_idx]
-            instr_utm_x, instr_utm_y = latlon_to_utm(instr_lat, instr_lon)
-            dist_to_instr = math.hypot(instr_utm_x - current_utm_x, instr_utm_y - current_utm_y)
-            
-            # 시작 안내 (도로까지 직진) - 거리 포함
-            if instruction.get('type') == 'depart' and not instruction['announced_action'] and i == 0:
-                message_with_distance = f"{instruction['text']} (거리: {int(dist_to_instr)}미터)"
-                instruction_pub.publish(message_with_distance)
-                route_instructions[i]['announced_action'] = True
-                last_instruction_point = instruction_idx
-                rospy.loginfo(f"[시작 안내] {message_with_distance}")
-                continue
-            
-            # 미리 안내 - 거리 포함
-            if not instruction['announced_preview'] and preview_distance - 5 <= dist_to_instr <= preview_distance + 5:
-                preview_msg = f"{int(dist_to_instr)}미터 앞에서 {instruction['text']}"
-                instruction_pub.publish(preview_msg)
-                route_instructions[i]['announced_preview'] = True
-                rospy.loginfo(f"[안내 미리알림] {preview_msg}")
-            
-            # 실행 안내 - 현재 거리 포함
-            elif not instruction['announced_action'] and dist_to_instr <= action_distance:
-                action_msg = f"{instruction['text']} (현재 {int(dist_to_instr)}미터 전방)"
-                instruction_pub.publish(action_msg)
-                route_instructions[i]['announced_action'] = True
-                last_instruction_point = instruction_idx
-                rospy.loginfo(f"[안내 지시사항] {action_msg}")
+    # 처리된 안내들 제거 (역순으로 제거해야 인덱스 꼬임 방지)
+    for i in reversed(instructions_to_remove):
+        pending_instructions.pop(i)
 
 def plan_navigation_route(start_lat, start_lon, end_lat, end_lon, destination_name):
     """개선된 경로 계획 함수"""
-    global route_coords, has_route, current_route_index, last_instruction_point, route_instructions
+    global route_coords, has_route, current_route_index, pending_instructions, announced_instructions
     
     # GPS 품질 확인 후 경로 계획
     if not gps_quality_good:
@@ -582,19 +556,11 @@ def plan_navigation_route(start_lat, start_lon, end_lat, end_lon, destination_na
         resolution = max(0.5, current_gps_accuracy / 3.0)  # 정확도가 나쁘면 더 성긴 보간
         route_coords = interpolate_coords(complete_route, resolution=resolution)
         
-        if nearest_start_lat and distance_to_road > road_threshold:
-            pre_instruction = {
-                'index': 0,
-                'type': 'depart',
-                'modifier': 'straight',
-                'location': [start_lon, start_lat],
-                'distance': distance_to_road
-            }
-            instructions = [pre_instruction] + instructions
+        # 새로운 턴 안내 시스템 설정
+        setup_turn_instructions(instructions)
         
-        process_navigation_instructions(instructions)
         has_route = True
-        rospy.loginfo(f"[경로 설정 완료] 총 {len(route_coords)} 지점")
+        rospy.loginfo(f"[경로 설정 완료] 총 {len(route_coords)} 지점, {len(pending_instructions)}개 턴 지점")
         return True
     else:
         rospy.logerr("[경로 실패] OSRM에서 경로를 가져올 수 없습니다.")
@@ -651,7 +617,8 @@ def provide_distance_updates():
         rospy.sleep(5.0)  # 5초마다 체크
 
 def navigation_command_callback(msg):
-    global route_coords, has_route, current_route_index, last_instruction_point, route_instructions, current_destination
+    global route_coords, has_route, current_route_index, current_destination
+    global pending_instructions, announced_instructions
     
     destination = msg.data.strip()
     
@@ -661,8 +628,9 @@ def navigation_command_callback(msg):
         route_coords = []
         current_destination = None
         current_route_index = 0
-        last_instruction_point = -1
-        route_instructions = []
+        # 안내 시스템 초기화
+        pending_instructions.clear()
+        announced_instructions.clear()
         instruction_pub.publish("네비게이션을 중지합니다.")
         rospy.loginfo("[네비게이션 중지] 사용자 요청에 의해 중지됨")
         return
@@ -714,7 +682,6 @@ def navigation_command_callback(msg):
         else:
             instruction_pub.publish(f"'{destination}'까지의 경로 안내를 시작합니다.")
         current_route_index = 0
-        last_instruction_point = -1
     else:
         instruction_pub.publish("경로를 계산할 수 없습니다. 다시 시도해주세요.")
 
