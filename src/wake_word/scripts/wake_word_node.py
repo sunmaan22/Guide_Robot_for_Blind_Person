@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import rospy
 from std_msgs.msg import Empty
 import pvporcupine
@@ -6,15 +7,24 @@ import pyaudio
 import numpy as np
 from scipy.signal import resample_poly
 import threading
+import rospkg
+from dotenv import load_dotenv
 
-ACCESS_KEY = "s/Wlero0+Jv8EUj66HR89gxYx7COLCNRl5E7Diixx4yqgasz7GJBVg=="
+load_dotenv()
+
+ACCESS_KEY = os.getenv("PORCUPINE_ACCESS_KEY")
+if not ACCESS_KEY:
+    raise RuntimeError("PORCUPINE_ACCESS_KEY 환경변수가 설정되지 않았습니다. .env를 확인하세요.")
+
 KEYWORD = "하이 바둑"
-MODEL_PATH = "/home/sunmaan/catkin_ws/src/wake_word/porcupine_params_ko.pv"
-PPN_PATH = "/home/sunmaan/catkin_ws/src/wake_word/하이-바둑_ko_raspberry-pi_v3_0_0.ppn"
+
+_PKG_DIR = rospkg.RosPack().get_path('wake_word')
+MODEL_PATH = os.path.join(_PKG_DIR, "porcupine_params_ko.pv")
+PPN_PATH = os.path.join(_PKG_DIR, "하이-바둑_ko_raspberry-pi_v3_0_0.ppn")
 
 MIC_RATE = 48000
 TARGET_RATE = 16000
-INPUT_DEVICE_INDEX = 1  # 본인의 장치 번호에 맞게 조정
+INPUT_DEVICE_INDEX = int(os.getenv("MIC_DEVICE_INDEX", "1"))  # 본인의 장치 번호에 맞게 .env에서 조정
 
 class WakeWordNode:
     def __init__(self):
@@ -77,8 +87,11 @@ class WakeWordNode:
         try:
             while not rospy.is_shutdown():
                 with self.lock:
-                    if self.stt_active:
-                        continue
+                    active = self.stt_active
+                if active:
+                    # STT 처리 중에는 CPU를 계속 태우는 busy-wait 대신 짧게 대기
+                    rospy.sleep(0.05)
+                    continue
 
                 data = self.audio_stream.read(self.buffer_size, exception_on_overflow=False)
                 audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)

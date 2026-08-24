@@ -285,7 +285,9 @@ class GPSPublisher:
         hdop = 99.0
         
         while not rospy.is_shutdown():
-            if self.ser.in_waiting:
+            # 한 epoch에 GPGGA/GNRMC 등 여러 문장이 들어오므로, if가 아니라 while로
+            # 버퍼에 쌓인 줄을 모두 소진해야 처리 지연이 누적되지 않는다.
+            while self.ser.in_waiting:
                 line = self.ser.readline().decode('ascii', errors='ignore').strip()
                 
                 # GPGGA 메시지에서 신호 품질 정보 추출
