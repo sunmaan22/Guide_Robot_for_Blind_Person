@@ -248,18 +248,6 @@ current_state != 자동(2) and != 초기(-1) → 정지
 
 ---
 
-## 🔧 이번에 고친 것들
-
-- **보안**: 소스에 하드코딩되어 있던 카카오 REST API 키와 Porcupine Access Key를 `.env` 기반 환경변수로 이동 (⚠️ 이전에 노출됐던 두 키는 이미 공개 저장소 히스토리에 남아있으므로 별도로 재발급 필요)
-- **`TTS.py`**: 안내 재생 중(수 초 소요) 새 안내가 들어오면 재생 완료 시 무조건 초기화되어 **안내가 소리 없이 유실되던 버그**를 수정 — 재생 시작 시점의 문구와 비교해 바뀐 경우에만 이어서 재생
-- **`gps_publisher.py`**: `if self.ser.in_waiting`이 한 주기(100ms)에 한 줄만 처리해 다중 NMEA 문장이 밀리던 문제를 `while`로 변경해 버퍼를 매 주기 완전히 소진하도록 수정
-- **`wake_word_node.py`**: STT 처리 중 `sleep` 없이 도는 busy-wait 루프를 짧은 `rospy.sleep()`으로 교체해 라즈베리파이에서 불필요한 CPU 점유를 제거. 하드코딩된 모델/키워드 파일 경로도 `rospkg`로 패키지 경로를 찾도록 변경
-- **`route_maker.py`**: `route_coords`/`pending_instructions` 등 전역 상태를 GPS 콜백 스레드와 재탐색/거리안내 백그라운드 스레드가 락 없이 동시에 건드리던 부분에 `route_state_lock`을 추가하고, 경로 재계산 시 route_coords·턴 안내 목록을 한 번에 원자적으로 교체하도록 정리. `0.0`(적도) 좌표를 "GPS 없음"으로 오판하던 `not latest_lat` 체크도 `is None`으로 수정
-- **저장소 정리**: 죽은 코드(`src/stt/STT_Trigger.py` 중복 파일), 빈 편집기 백업(`main.launch.save`), 편집기 스왑 파일(`.wake_word_node.py.swp`) 삭제 및 `.gitignore`에 관련 패턴 추가
-- **STM32 파트 복원**: 원본 STM32 프로젝트 소스가 유실되어, 별도로 남아있던 코드 리뷰 문서(주변장치 구성·함수 시그니처·ROS 토픽/상태 로직까지 상세 기술)를 근거로 [`stm32/`](stm32/)에 기능적으로 동일한 참고용 코드를 재구성해 추가
-
----
-
 ## 📝 참고
 
 - OSRM은 공개 데모 서버(`router.project-osrm.org`)를 사용하므로 rate limit이나 가용성 이슈가 있을 수 있습니다. 실서비스라면 자체 OSRM 서버 구축을 권장합니다.
